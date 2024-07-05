@@ -1,0 +1,202 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8"/>
+    <title>마이크 테스트</title>
+</head>
+
+<body>
+<button type="button" id="recordButton" onclick="startAudioRecording();">녹음</button>
+<button type="button" id="playButton" onclick="stopAudioRecording();" disabled>중지 및 재생</button>
+<button type="button" id="saveButton" onclick="saveAudio()" disabled>저장</button>
+
+<p>
+    <audio id="audio-control" controls style="display: none;"/>
+</p>
+</body>
+
+<script type="text/javascript">
+    var audioElementSource = document.querySelector('#audio-control');
+    var recordButton = document.querySelector('#recordButton');
+    var playButton = document.querySelector('#playButton');
+    var saveButton = document.querySelector('#saveButton');
+    const MIME_TYPE = "audio/mp3";
+    var interval_id = null;
+
+    var audioRecorder = {
+        audioBlobs: [],
+        mediaRecorder: null,
+        streamBeingCaptured: null,
+        base64EncodedData: null,
+        ws: null,
+
+        start: () => {
+            if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+                return Promise.reject(new Error('mediaDevices API or getUserMedia method is not supported in this browswer.'));
+            }
+
+            return navigator.mediaDevices.getUserMedia({audio: true})
+                .then((stream) => {
+                    console.log('Start navigator.mediaDevices.getUserMedia...');
+
+                    audioRecorder.ws = new WebSocket("ws://localhost:8080/ws", "voice_upload");
+
+                    audioRecorder.streamBeingCaptured = stream;
+                    audioRecorder.mediaRecorder = new MediaRecorder(stream);
+                    audioRecorder.audioBlobs = [];
+                    audioRecorder.base64EncodedData = null;
+
+                    console.log('audioRecorder.mediaRecorder =>', audioRecorder.mediaRecorder);
+
+                    audioRecorder.mediaRecorder.addEventListener("dataavailable", evt => {
+                        audioRecorder.audioBlobs.push(evt.data);
+
+                    });
+
+                    audioRecorder.ws.onopen = (data) => {
+                        audioRecorder.ws.binaryType = 'blob';
+
+                        let payload = new Blob([data], {type: MIME_TYPE});
+
+                        audioRecorder.ws.send(payload);
+                    }
+
+                    audioRecorder.mediaRecorder.start();
+                });
+        },
+        stop: () => {
+            return new Promise(resolve => {
+                if (!audioRecorder.mediaRecorder) {
+                    return;
+                }
+
+                audioRecorder.mediaRecorder.addEventListener('stop', () => {
+                    let audioBlob = new Blob(audioRecorder.audioBlobs, {type: MIME_TYPE});
+
+                    resolve(audioBlob);
+                });
+
+                audioRecorder.mediaRecorder.stop();
+                audioRecorder.stopStream();
+                audioRecorder.resetRecordingProperties();
+                audioRecorder.ws = null;
+            });
+        },
+        stopStream: () => {
+            audioRecorder.streamBeingCaptured.getTracks().forEach(track => track.stop());
+        },
+        resetRecordingProperties: () => {
+            audioRecorder.mediaRecorder = null;
+            audioRecorder.streamBeingCaptured = null;
+        },
+        cancel: () => {
+        }
+    };
+
+    function startAudioRecording() {
+        audioRecorder.start().then(() => {
+            console.log('Start recording...');
+            playButton.disabled = false;
+            recordButton.disabled = true;
+            saveButton.disabled = true;
+        }).catch(err => {
+            console.log('err =>', err);
+            //No Browser Support Error
+            if (err.message.includes("mediaDevices API or getUserMedia method is not supported in this browswer.")) {
+                console.log("To record audio, use browsers like Chrome and Firefox.");
+            }
+            //Error handling structure
+            switch (err.name) {
+                case 'AbortError': //error from navigator.mediaDevices.getUserMedia
+                    console.log("An AbortError has occured.");
+                    break;
+                case 'NotAllowedError': //error from navigator.mediaDevices.getUserMedia
+                    console.log("A NotAllowedError has occured. User might have denied permission.");
+                    break;
+                case 'NotFoundError': //error from navigator.mediaDevices.getUserMedia
+                    console.log("A NotFoundError has occured.");
+                    break;
+                case 'NotReadableError': //error from navigator.mediaDevices.getUserMedia
+                    console.log("A NotReadableError has occured.");
+                    break;
+                case 'SecurityError': //error from navigator.mediaDevices.getUserMedia or from the MediaRecorder.start
+                    console.log("A SecurityError has occured.");
+                    break;
+                case 'TypeError': //error from navigator.mediaDevices.getUserMedia
+                    console.log("A TypeError has occured.");
+                    break;
+                case 'InvalidStateError': //error from the MediaRecorder.start
+                    console.log("An InvalidStateError has occured.");
+                    break;
+                case 'UnknownError': //error from the MediaRecorder.start
+                    console.log("An UnknownError has occured.");
+                    break;
+                default:
+                    console.log("An error occured with the error name " + err.name);
+            }
+        });
+    }
+
+    function stopAudioRecording() {
+        audioRecorder.stop().then(audioAsBlob => {
+            recordButton.disabled = false;
+            playButton.disabled = true;
+            saveButton.disabled = false;
+
+            let fileReader = new FileReader();
+
+            fileReader.onload = (evt) => {
+                console.log('FileReader onloaded!!!');
+                let payload = evt.target.result;
+
+                audioElementSource.src = payload;
+                audioRecorder.base64EncodedData = payload;
+
+                let BlobType = audioAsBlob.type.includes(";") ?
+                    audioAsBlob.type.substr(0, audioAsBlob.type.indexOf(';')) : audioAsBlob.type;
+                audioElementSource.type = BlobType
+
+                audioElementSource.style.display = 'block';
+                audioElementSource.play();
+            };
+
+            fileReader.readAsDataURL(audioAsBlob);
+        }).catch(err => {
+            console.log('stop error =>', err);
+        });
+    }
+
+    function saveAudio() {
+        if (!audioRecorder.audioBlobs || audioRecorder.audioBlobs.length == 0 || !audioRecorder.base64EncodedData) {
+            return;
+        }
+
+        console.log('blob =>', audioRecorder.base64EncodedData);
+
+        var payload = {
+            audio_str: audioRecorder.base64EncodedData,
+        };
+        var payload = JSON.stringify(payload);
+
+        console.log('payload =>', payload);
+
+        fetch('http://localhost:8080/save', {
+            method: 'post',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: payload
+        }).then(res => {
+            console.log('res =>', res);
+
+            if (res.status === 200) {
+                alert('저장되었습니다.');
+            } else {
+                alert('Error!');
+            }
+        });
+    }
+</script>
+
+</html>
