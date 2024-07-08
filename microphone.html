@@ -17,12 +17,10 @@
 </body>
 
 <script type="text/javascript">
-    var audioElementSource = document.querySelector('#audio-control');
     var recordButton = document.querySelector('#recordButton');
     var playButton = document.querySelector('#playButton');
     var saveButton = document.querySelector('#saveButton');
     const MIME_TYPE = "audio/mp3";
-    var interval_id = null;
 
     var audioRecorder = {
         audioBlobs: [],
@@ -43,26 +41,32 @@
                     audioRecorder.ws = new WebSocket("ws://localhost:8080/ws", "voice_upload");
 
                     audioRecorder.streamBeingCaptured = stream;
-                    audioRecorder.mediaRecorder = new MediaRecorder(stream);
+                    audioRecorder.mediaRecorder = new MediaRecorder(stream, {
+                        audioBitsPerSecond: 128000,
+                        mimeType: 'audio/webm;codecs=opus'
+                    });
                     audioRecorder.audioBlobs = [];
                     audioRecorder.base64EncodedData = null;
 
-                    console.log('audioRecorder.mediaRecorder =>', audioRecorder.mediaRecorder);
-
                     audioRecorder.mediaRecorder.addEventListener("dataavailable", evt => {
-                        audioRecorder.audioBlobs.push(evt.data);
+                        console.log('appended audio data =>', evt.data.size);
+                        console.log('ws.readyState =>', audioRecorder.ws.readyState);
 
+                        if (audioRecorder.ws.readyState !== WebSocket.CLOSED) {
+                            console.log('received audio data!');
+                            audioRecorder.ws.binaryType = 'blob';
+
+                            let payload = new Blob([evt.data], {type: MIME_TYPE});
+
+                            audioRecorder.ws.send(payload);
+                        }
                     });
 
                     audioRecorder.ws.onopen = (data) => {
-                        audioRecorder.ws.binaryType = 'blob';
-
-                        let payload = new Blob([data], {type: MIME_TYPE});
-
-                        audioRecorder.ws.send(payload);
+                        console.log('Websocket connected!!!');
                     }
 
-                    audioRecorder.mediaRecorder.start();
+                    audioRecorder.mediaRecorder.start(1000); // 1초 데이터
                 });
         },
         stop: () => {
@@ -72,15 +76,12 @@
                 }
 
                 audioRecorder.mediaRecorder.addEventListener('stop', () => {
-                    let audioBlob = new Blob(audioRecorder.audioBlobs, {type: MIME_TYPE});
-
-                    resolve(audioBlob);
+                    resolve('complete');
                 });
 
                 audioRecorder.mediaRecorder.stop();
                 audioRecorder.stopStream();
                 audioRecorder.resetRecordingProperties();
-                audioRecorder.ws = null;
             });
         },
         stopStream: () => {
@@ -139,31 +140,16 @@
     }
 
     function stopAudioRecording() {
-        audioRecorder.stop().then(audioAsBlob => {
+        audioRecorder.stop().then(result => {
             recordButton.disabled = false;
             playButton.disabled = true;
             saveButton.disabled = false;
 
-            let fileReader = new FileReader();
+            audioRecorder.ws.binaryType = 'text';
 
-            fileReader.onload = (evt) => {
-                console.log('FileReader onloaded!!!');
-                let payload = evt.target.result;
-
-                audioElementSource.src = payload;
-                audioRecorder.base64EncodedData = payload;
-
-                let BlobType = audioAsBlob.type.includes(";") ?
-                    audioAsBlob.type.substr(0, audioAsBlob.type.indexOf(';')) : audioAsBlob.type;
-                audioElementSource.type = BlobType
-
-                audioElementSource.style.display = 'block';
-                audioElementSource.play();
-            };
-
-            fileReader.readAsDataURL(audioAsBlob);
-        }).catch(err => {
-            console.log('stop error =>', err);
+            audioRecorder.ws.send('complete');
+            audioRecorder.ws.disconnect();
+            audioRecorder.ws = null;
         });
     }
 

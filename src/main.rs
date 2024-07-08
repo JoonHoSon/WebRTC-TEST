@@ -1,5 +1,6 @@
+use std::io;
 use std::io::{Error, Read};
-use std::process::exit;
+use std::process::{exit, Command, Output};
 
 use actix::{Actor, ActorContext, StreamHandler};
 use actix_cors::Cors;
@@ -74,12 +75,14 @@ impl StreamHandler<Result<Message, ProtocolError>> for MicrophoneWs {
             Ok(Message::Text(text)) => {
                 println!("receive text message => {text:?}");
                 ctx.text(text);
+                convert_audio_file(&self.byte_buf);
+
+                ctx.stop();
             }
             Ok(Message::Binary(bin)) => {
                 println!("receive binary message");
                 self.append(&bin);
                 ctx.binary(bin);
-                ctx.pong("receive image complete".as_bytes());
             }
             Ok(Message::Close(None)) => {
                 println!("close connection by client");
@@ -98,6 +101,39 @@ impl StreamHandler<Result<Message, ProtocolError>> for MicrophoneWs {
         println!("Receive payload finished");
         println!("bytes length => {:#?}", self.byte_buf().len());
         ctx.stop();
+    }
+}
+
+fn convert_audio_file(buf: &Vec<u8>) {
+    println!("Entered convert_audio_file function!");
+
+    let filename = chrono::Utc::now().timestamp_millis();
+    let source_name = format!("{}.webm", filename);
+    let target_name = format!("{}.mp3", filename);
+
+    std::fs::write(source_name.as_str(), &buf).unwrap();
+
+    // webm convert to mp3
+    let result = Command::new("ffmpeg")
+        .args([
+            "-i",
+            source_name.as_str(),
+            "-vn",
+            "-ab",
+            "128k",
+            "-ar",
+            "44100",
+            "-y",
+            target_name.as_str(),
+        ])
+        .output();
+
+    if result.is_err() {
+        let err = result.err();
+        eprintln!("ffmpeg error => {err:#?}");
+    } else {
+        let result = result.unwrap();
+        println!("ffmpeg command result => {result:#?}");
     }
 }
 
